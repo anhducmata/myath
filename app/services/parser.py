@@ -15,14 +15,117 @@ class ParserService:
         self.model = settings.openai_model
         self.confidence_threshold = 0.7  # Threshold for using image fallback
     
-    async def parse_problem(self, ocr_text: str, latex: Optional[str] = None, image_content: Optional[bytes] = None) -> ParsedProblem:
+    async def parse_problem(self, ocr_text: str, latex: Optional[str] = None, image_content: Optional[bytes] = None, image_url: Optional[str] = None) -> ParsedProblem:
         """
         Parse OCR output into structured problem format using LLM
-        If OCR confidence is low and image is provided, use vision model for better context
+        Always sends both OCR text and image to OpenAI in a single call for best accuracy
         """
         try:
-            # First attempt: Parse with text only
-            logger.info("🤖 Attempting OpenAI parsing with text only...")
+            # If we have image data, use the combined text + vision approach
+            if image_content or image_url:
+                logger.info("🤖 Using OpenAI vision model with OCR text + image...")
+                return await self._parse_with_combined_input(ocr_text, image_content, image_url, latex)
+            else:
+                # Fallback to text-only if no image available
+                logger.info("🤖 Using OpenAI text-only parsing (no image available)...")
+                return await self._parse_text_only(ocr_text, latex)
+            
+        except Exception as e:
+            logger.error(f"Problem parsing failed: {e}")
+            
+            # Return a basic fallback structure
+            return ParsedProblem(
+                type=ProblemType.OTHER,
+                statement=ocr_text,
+                asks=["solve"],
+                options=[],
+                variables=[]
+            )
+    
+    async def _parse_with_combined_input(self, ocr_text: str, image_content: Optional[bytes] = None, image_url: Optional[str] = None, latex: Optional[str] = None) -> ParsedProblem:
+        """
+        Parse problem using both OCR text and image in a single OpenAI call
+        This is the main parsing method that combines text and visual analysis
+        """
+        try:
+            logger.info("🔍 Using OpenAI vision model with combined OCR text + image...")
+            
+            # Create combined prompt that references both text and image
+            combined_prompt = self._create_combined_parsing_prompt(ocr_text, latex)
+            
+            # Log the prompt being sent
+            logger.info("📋 PROMPT BEING SENT TO OPENAI:")
+            logger.info("=" * 50)
+            logger.info(combined_prompt)
+            logger.info("=" * 50)
+            
+            # Prepare image content for the request
+            image_content_for_request = None
+            
+            if image_content:
+                # Convert image bytes to base64
+                image_b64 = base64.b64encode(image_content).decode()
+                image_content_for_request = {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{image_b64}"}
+                }
+                logger.info("📡 Using base64 encoded image content with OCR text...")
+            elif image_url and not image_url.startswith("http://localhost"):
+                # Use the provided image URL only if it's not localhost
+                image_content_for_request = {
+                    "type": "image_url",
+                    "image_url": {"url": image_url}
+                }
+                logger.info(f"📡 Using external image URL with OCR text: {image_url[:50]}...")
+            else:
+                # If we only have a localhost URL, we can't use it with OpenAI
+                if image_url and image_url.startswith("http://localhost"):
+                    logger.warning("⚠️ Localhost image URL detected, but no image content provided. Falling back to text-only parsing.")
+                    return await self._parse_text_only(ocr_text, latex)
+                raise ValueError("No usable image content provided")
+            
+            # Make the combined vision + text request
+            response = self.client.chat.completions.create(
+                model="gpt-4o",  # Use the latest vision model
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a mathematics problem parser with vision capabilities. Analyze both the extracted OCR text and the original image to parse the problem into a structured JSON format. Use the OCR text as a starting point, but correct and enhance it based on what you see in the image."
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": combined_prompt
+                            },
+                            image_content_for_request
+                        ]
+                    }
+                ],
+                temperature=0.1,
+                max_tokens=1500
+            )
+            
+            # Parse the response
+            content = response.choices[0].message.content
+            logger.info(f"📋 OpenAI combined response received: {len(content)} characters")
+            
+            parsed_data = json.loads(content)
+            return ParsedProblem(**parsed_data)
+            
+        except Exception as e:
+            logger.error(f"Combined parsing failed: {e}")
+            # Fallback to text-only parsing
+            logger.info("🔄 Falling back to text-only parsing...")
+            return await self._parse_text_only(ocr_text, latex)
+
+    async def _parse_text_only(self, ocr_text: str, latex: Optional[str] = None) -> ParsedProblem:
+        """
+        Parse problem using only text (fallback method)
+        """
+        try:
+            logger.info("🤖 Using OpenAI text-only parsing...")
             prompt = self._create_parsing_prompt(ocr_text, latex)
             
             response = self.client.chat.completions.create(
@@ -30,7 +133,7 @@ class ParserService:
                 messages=[
                     {
                         "role": "system", 
-                        "content": "You are a mathematics problem parser. Parse the given text into a structured JSON format. Include a 'confidence' field (0.0-1.0) indicating how confident you are in the parsing."
+                        "content": "You are a mathematics problem parser. Parse the given text into a structured JSON format."
                     },
                     {
                         "role": "user",
@@ -45,76 +148,52 @@ class ParserService:
             content = response.choices[0].message.content
             parsed_data = json.loads(content)
             
-            # Check confidence level and visual indicators
-            parsing_confidence = parsed_data.get('confidence', 1.0)
-            logger.info(f"🤖 OpenAI parsing confidence: {parsing_confidence}")
-            
-            # Check for visual indicators that suggest image content is needed
-            visual_indicators = [
-                "figure below", "diagram", "graph", "picture", "image", 
-                "shown below", "illustrated", "geometric", "triangle", "rectangle",
-                "circle", "coordinate", "plot", "chart", "table", "grid"
-            ]
-            
-            text_lower = ocr_text.lower()
-            has_visual_indicators = any(indicator in text_lower for indicator in visual_indicators)
-            
-            # Trigger image fallback if:
-            # 1. Low parsing confidence OR
-            # 2. Text mentions visual elements but we only have text
-            should_use_image = (parsing_confidence < self.confidence_threshold) or (has_visual_indicators and image_content)
-            
-            if should_use_image and image_content:
-                if parsing_confidence < self.confidence_threshold:
-                    logger.info(f"⚠️ Low confidence ({parsing_confidence} < {self.confidence_threshold}), retrying with image...")
-                else:
-                    logger.info(f"🔍 Visual elements detected in text ({[i for i in visual_indicators if i in text_lower]}), using image for better context...")
-                
-                return await self._parse_with_image(ocr_text, image_content, latex)
-            
-            # Remove confidence from final result (not part of ParsedProblem model)
-            parsed_data.pop('confidence', None)
             return ParsedProblem(**parsed_data)
             
         except Exception as e:
-            logger.error(f"Problem parsing failed: {e}")
-            
-            # If text parsing failed and we have image, try with vision model
-            if image_content:
-                logger.info("🔄 Text parsing failed, attempting with image...")
-                try:
-                    return await self._parse_with_image(ocr_text, image_content, latex)
-                except Exception as vision_error:
-                    logger.error(f"Vision parsing also failed: {vision_error}")
-            
-            # Return a basic fallback structure
-            return ParsedProblem(
-                type=ProblemType.OTHER,
-                statement=ocr_text,
-                asks=["solve"],
-                options=[],
-                variables=[]
-            )
-    
-    async def _parse_with_image(self, ocr_text: str, image_content: bytes, latex: Optional[str] = None) -> ParsedProblem:
+            logger.error(f"Text-only parsing failed: {e}")
+            raise
         """
-        Parse problem using OpenAI vision model with both text and image context
+        Enhanced image parsing that supports both image content and URLs
+        This implements the fallback mechanism for low confidence responses
         """
         try:
             logger.info("🔍 Using OpenAI vision model for enhanced parsing...")
             
-            # Convert image to base64
-            image_b64 = base64.b64encode(image_content).decode()
-            
             # Create vision prompt
             vision_prompt = self._create_vision_parsing_prompt(ocr_text, latex)
             
+            # Prepare image content for the request
+            image_content_for_request = None
+            
+            if image_content:
+                # Convert image bytes to base64
+                image_b64 = base64.b64encode(image_content).decode()
+                image_content_for_request = {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{image_b64}"}
+                }
+                logger.info("📡 Using base64 encoded image content...")
+            elif image_url and not image_url.startswith("http://localhost"):
+                # Use the provided image URL only if it's not localhost
+                image_content_for_request = {
+                    "type": "image_url",
+                    "image_url": {"url": image_url}
+                }
+                logger.info(f"📡 Using external image URL: {image_url[:50]}...")
+            else:
+                # If we only have a localhost URL, we can't use it with OpenAI
+                if image_url and image_url.startswith("http://localhost"):
+                    logger.warning("⚠️ Localhost image URL detected, but no image content provided. OpenAI cannot access localhost URLs.")
+                raise ValueError("No usable image content provided (localhost URLs not supported by OpenAI)")
+            
+            # Make the vision request with either URL or base64 content
             response = self.client.chat.completions.create(
                 model="gpt-4o",  # Use the latest vision model
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a mathematics problem parser with vision capabilities. Analyze both the extracted text and the original image to parse the problem into a structured JSON format."
+                        "content": "You are a mathematics problem parser with vision capabilities. Analyze both the extracted text and the original image to parse the problem into a structured JSON format. Focus on providing accurate mathematical analysis."
                     },
                     {
                         "role": "user",
@@ -123,12 +202,7 @@ class ParserService:
                                 "type": "text",
                                 "text": vision_prompt
                             },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{image_b64}"
-                                }
-                            }
+                            image_content_for_request
                         ]
                     }
                 ],
@@ -164,9 +238,59 @@ class ParserService:
             return ParsedProblem(**parsed_data)
             
         except Exception as e:
-            logger.error(f"Vision parsing failed: {e}")
+            logger.error(f"Enhanced vision parsing failed: {e}")
             raise
     
+    def _create_combined_parsing_prompt(self, ocr_text: str, latex: Optional[str] = None) -> str:
+        """Create a prompt for combined OCR text + image analysis"""
+        prompt = f"""
+I have extracted text from a mathematical problem image using OCR, and I'm also providing you with the original image. Please analyze both to parse this problem accurately.
+
+OCR Extracted Text:
+{ocr_text}
+"""
+        
+        if latex:
+            prompt += f"""
+LaTeX (if available): {latex}
+"""
+        
+        prompt += """
+Please examine BOTH the OCR text and the original image to:
+1. Verify and correct any OCR errors by looking at the actual image
+2. Identify mathematical symbols, diagrams, or visual elements that OCR might have missed
+3. Understand the complete context of the problem including any visual components
+4. Parse the problem into the structured format below
+
+IMPORTANT: Return ONLY a valid JSON object with this exact structure:
+{
+    "type": "equation|system|integral|derivative|word_problem|mcq|geometry|graph_analysis|other",
+    "statement": "The complete and corrected problem statement incorporating both text and visual elements",
+    "asks": ["solve_for:x", "simplify", "compute_value", "find_derivative", "analyze_graph", etc.],
+    "options": ["A) option1", "B) option2", ...],
+    "variables": ["x", "y", "z", ...],
+    "visual_elements": ["diagram", "graph", "geometric_figure", "none"]
+}
+
+CRITICAL MCQ DETECTION RULES:
+- If you see numbered options like "(1)", "(2)", "(3)", "(4)" OR lettered options like "A)", "B)", "C)", "D)" in EITHER the OCR text OR the image, then this is DEFINITELY type "mcq"
+- If the problem asks "What percentage", "Which of the following", "Select the correct", or similar choice questions, it's type "mcq"
+- For MCQ problems, convert numbered options (1), (2), (3), (4) to lettered format A), B), C), D) in the options array
+- Examples: "(1) 35%" becomes "A) 35%", "(2) 20%" becomes "B) 20%", etc.
+
+Guidelines:
+- Use the image to correct any OCR errors in the text
+- If you see mathematical symbols, diagrams, or figures in the image that aren't captured in the OCR text, include them in your analysis
+- For geometric problems, describe the shapes, measurements, and spatial relationships you see
+- For graphs, describe axes, curves, and key points visible in the image
+- For MCQ problems, ensure ALL options are captured and formatted correctly as A), B), C), D)
+- Be specific about what the problem is asking for based on both text and visual cues
+- Include mathematical expressions in LaTeX format when possible
+
+CRITICAL: Return ONLY the JSON object, no explanation, no markdown formatting, no additional text.
+"""
+        return prompt
+
     def _create_vision_parsing_prompt(self, ocr_text: str, latex: Optional[str] = None) -> str:
         """Create a detailed prompt for vision-based problem parsing"""
         prompt = f"""
@@ -195,12 +319,19 @@ IMPORTANT: Return ONLY a valid JSON object with this exact structure:
     "visual_elements": ["diagram", "graph", "geometric_figure", "none"]
 }
 
+CRITICAL MCQ DETECTION RULES:
+- If the text contains numbered options like "(1)", "(2)", "(3)", "(4)" OR lettered options like "A)", "B)", "C)", "D)", then this is DEFINITELY type "mcq"
+- If the text asks "What percentage", "Which of the following", "Select the correct", or similar choice questions, it's type "mcq"
+- For MCQ problems, convert numbered options (1), (2), (3), (4) to lettered format A), B), C), D) in the options array
+- Examples: "(1) 35%" becomes "A) 35%", "(2) 20%" becomes "B) 20%", etc.
+
 Guidelines:
 - Use the image to correct or enhance the OCR text
 - Include mathematical expressions in LaTeX format when possible
-- Identify the problem type based on both text and visual elements
+- Identify the problem type based on both text and visual elements - ESPECIALLY detect MCQ correctly!
 - For geometric problems, describe the shapes and measurements visible
 - For graphs, describe axes, curves, and key points
+- For MCQ problems, list ALL options in standardized A), B), C), D) format
 - Be specific about what the problem is asking for
 
 CRITICAL: Return ONLY the JSON object, no explanation, no markdown formatting, no additional text.
@@ -229,11 +360,16 @@ Return a JSON object with the following structure:
     "confidence": 0.0-1.0 (how confident you are in this parsing based on text clarity)
 }
 
+IMPORTANT MCQ DETECTION RULES:
+- If the text contains numbered options like "(1)", "(2)", "(3)", "(4)" OR lettered options like "A)", "B)", "C)", "D)", then this is definitely type "mcq"
+- If the text asks "What percentage", "Which of the following", "Select the correct", or similar choice questions, it's type "mcq"
+- For MCQ problems, convert numbered options (1), (2), (3), (4) to lettered format A), B), C), D) in the options array
+
 Guidelines:
-- "type": Choose the most appropriate type based on the problem
+- "type": Choose the most appropriate type. Be especially careful to detect MCQ problems correctly!
 - "statement": Include the complete problem statement, prefer LaTeX for mathematical expressions
-- "asks": List what the problem is asking for (e.g., "solve_for:x", "simplify", "find_integral")
-- "options": Only include if this is a multiple choice question
+- "asks": List what the problem is asking for (e.g., "solve_for:x", "simplify", "find_integral", "compute_value")
+- "options": For MCQ problems, list ALL the options in A), B), C), D) format
 - "variables": List all variables present in the problem
 - "confidence": Rate 0.0-1.0 based on how clear and complete the OCR text appears
   - 1.0: Perfect, clear mathematical text
@@ -244,9 +380,9 @@ Guidelines:
   - 0.0: Completely unreadable or no mathematical content
 
 Examples:
-- Equation: "Solve x^2 + 2x + 1 = 0" → asks: ["solve_for:x"], confidence: 0.9
-- Integral: "Find ∫x²dx" → asks: ["find_integral"], confidence: 0.8
-- Word problem: "A car travels..." → asks: ["find_distance", "find_time"], confidence: 0.7
+- Equation: "Solve x^2 + 2x + 1 = 0" → type: "equation", asks: ["solve_for:x"], confidence: 0.9
+- MCQ: "What is 2+2? (1) 3 (2) 4 (3) 5" → type: "mcq", options: ["A) 3", "B) 4", "C) 5"], asks: ["compute_value"]
+- Word problem: "A car travels..." → type: "word_problem", asks: ["find_distance", "find_time"]
 
 Return only the JSON object, no additional text.
 """

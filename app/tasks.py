@@ -13,33 +13,11 @@ from app.models import ProblemStatus
 
 logger = logging.getLogger(__name__)
 
-# Initialize Celery
-celery_app = Celery(
-    'math_homework_processor',
-    broker=settings.celery_broker_url,
-    backend=settings.celery_result_backend,
-    include=['app.tasks']
-)
-
-# Configure Celery
-celery_app.conf.update(
-    task_serializer='json',
-    accept_content=['json'],
-    result_serializer='json',
-    timezone='UTC',
-    enable_utc=True,
-    task_track_started=True,
-    task_reject_on_worker_lost=True,
-    result_expires=3600,  # 1 hour
-    task_acks_late=True,
-    worker_prefetch_multiplier=1,
-    task_default_retry=False,
-    task_default_retry_delay=0,
-    task_default_max_retries=0,
-)
+# Import shared Celery app
+from celery_app import celery_app
 
 
-@celery_app.task(bind=True, name='process_math_problem', autoretry_for=(), retry=False, max_retries=0)
+@celery_app.task(bind=True, name='process_math_problem')
 def process_math_problem(self, problem_id: str, file_url: str, user_id: str):
     """
     Background task to process a math problem through the complete pipeline
@@ -72,7 +50,8 @@ def process_math_problem(self, problem_id: str, file_url: str, user_id: str):
             parsed_problem = await parser_service.parse_problem(
                 ocr_result.text, 
                 ocr_result.latex,
-                image_content=file_content  # Pass original image for fallback
+                image_content=file_content,  # Pass original image content for fallback
+                image_url=file_url  # Pass image URL for enhanced vision parsing
             )
             
             # Update with parsed result
@@ -127,7 +106,7 @@ def process_math_problem(self, problem_id: str, file_url: str, user_id: str):
                 logger.error(f"Failed to update error status: {update_error}")
             
             # Re-raise the exception for Celery to handle
-            raise self.retry(exc=e, countdown=60, max_retries=3)
+            raise
     
     # Run the async function
     try:

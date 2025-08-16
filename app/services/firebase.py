@@ -15,6 +15,7 @@ class FirebaseService:
         self._db = None
         self._bucket = None
         self._mock_mode = True  # Default to mock mode
+        self._mock_storage = {}  # In-memory storage for mock mode
         self._initialize_firebase()
     
     def _initialize_firebase(self):
@@ -109,6 +110,8 @@ class FirebaseService:
             import uuid
             problem_id = str(uuid.uuid4())
             problem_data['problem_id'] = problem_id
+            # Store in mock storage
+            self._mock_storage[problem_id] = problem_data.copy()
             logger.info(f"Mock: Created problem with ID {problem_id}")
             return problem_id
             
@@ -124,9 +127,13 @@ class FirebaseService:
     async def get_problem(self, problem_id: str) -> Optional[Dict[str, Any]]:
         """Get problem document from Firestore"""
         if self._mock_mode:
-            # Return mock problem data with proper structure
+            # Return from mock storage if exists
+            if problem_id in self._mock_storage:
+                return self._mock_storage[problem_id]
+            
+            # Return mock problem data with proper structure for missing documents
             from datetime import datetime
-            return {
+            mock_data = {
                 'problem_id': problem_id,
                 'user_id': 'dev-user-123',
                 'status': 'queued',  # Use valid ProblemStatus enum value
@@ -140,6 +147,9 @@ class FirebaseService:
                     'method': 'mock'
                 }
             }
+            # Store it for future reference
+            self._mock_storage[problem_id] = mock_data
+            return mock_data
             
         try:
             doc_ref = self._db.collection('problems').document(problem_id)
@@ -152,6 +162,18 @@ class FirebaseService:
     async def update_problem(self, problem_id: str, updates: Dict[str, Any]) -> None:
         """Update problem document in Firestore"""
         if self._mock_mode:
+            # Update in mock storage
+            if problem_id in self._mock_storage:
+                self._mock_storage[problem_id].update(updates)
+            else:
+                # Create new document if it doesn't exist
+                from datetime import datetime
+                self._mock_storage[problem_id] = {
+                    'problem_id': problem_id,
+                    'user_id': 'dev-user-123',
+                    'created_at': datetime.utcnow().isoformat(),
+                    **updates
+                }
             logger.info(f"Mock: Updated problem {problem_id} with {updates}")
             return
             
