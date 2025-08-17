@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
-from typing import Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, Query
+from typing import Dict, Any, List
 import uuid
 import logging
 from datetime import datetime
@@ -12,6 +12,50 @@ from app.tasks import task_manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/problems", tags=["problems"])
+
+
+@router.get("", response_model=List[ProblemOut])
+async def list_problems(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    limit: int = Query(default=10, ge=1, le=100),
+    offset: int = Query(default=0, ge=0)
+):
+    """
+    List user's problems
+    
+    - **limit**: Maximum number of problems to return (1-100, default 10)
+    - **offset**: Number of problems to skip (default 0)
+    - **X-API-Key**: API key in header (required)
+    
+    Returns list of user's problems ordered by creation date (newest first)
+    """
+    try:
+        logger.info(f"Listing problems for user {current_user.get('api_key', 'unknown')}")
+        
+        # Get problems from Firebase service
+        problems_data = await firebase_service.list_user_problems(
+            current_user.get('api_key', 'unknown'),
+            limit=limit,
+            offset=offset
+        )
+        
+        # Convert to ProblemOut models, filtering out invalid ones
+        problems = []
+        for problem_data in problems_data:
+            try:
+                problems.append(ProblemOut(**problem_data))
+            except Exception as validation_error:
+                logger.warning(f"Failed to parse problem {problem_data.get('problem_id', 'unknown')}: {validation_error}")
+                continue
+        
+        return problems
+        
+    except Exception as e:
+        logger.error(f"Error listing problems: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list problems"
+        )
 
 
 @router.post("", response_model=ProblemCreate, status_code=status.HTTP_201_CREATED)

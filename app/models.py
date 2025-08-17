@@ -24,8 +24,11 @@ class ProblemStatus(str, Enum):
 class SolutionStep(BaseModel):
     step_number: int
     description: str
+    explanation: Optional[str] = None  # AI explanation of why this step was chosen
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)  # AI confidence in this step
+    reasoning: Optional[str] = None  # Why this approach was chosen
+    working_out: Optional[str] = None  # Detailed mathematical working
     latex: Optional[str] = None
-    explanation: str
 
 
 class ParsedProblem(BaseModel):

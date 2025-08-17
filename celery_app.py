@@ -19,6 +19,10 @@ def make_celery():
         task_track_started=True,
         task_reject_on_worker_lost=True,
         result_expires=3600,
+        # Add compatibility settings for Python 3.13
+        broker_connection_retry_on_startup=True,
+        worker_pool='solo',  # Use solo pool for Windows compatibility
+        worker_concurrency=1,  # Reduce concurrency for stability
     )
     
     return celery

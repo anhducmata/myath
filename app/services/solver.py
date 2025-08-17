@@ -30,6 +30,17 @@ class SolverService:
         else:
             return result
     
+    def _create_uncertain_step(self, step_number: int, description: str, reason: str = "Complex problem requires more context") -> SolutionStep:
+        """Create a solution step when the AI is not confident about the answer"""
+        return SolutionStep(
+            step_number=step_number,
+            description=description,
+            explanation="I am not sure about this step due to the complexity of the problem",
+            confidence=0.2,
+            reasoning=f"This problem is challenging because: {reason}",
+            working_out="Additional information or context may be needed to solve this accurately"
+        )
+
     async def solve_problem(self, parsed_problem: ParsedProblem) -> Solution:
         """Route problem to appropriate solver based on type"""
         try:
@@ -51,10 +62,10 @@ class SolverService:
         except Exception as e:
             logger.error(f"Solver failed: {e}")
             return Solution(
-                result=f"Error: {str(e)}",
-                steps=[],
-                confidence=0.0,
-                method="error",
+                result="I am not sure how to solve this problem",
+                steps=[self._create_uncertain_step(1, "Problem analysis failed", f"Error occurred: {str(e)}")],
+                confidence=0.1,
+                method="error_handling",
                 verification_passed=False
             )
     
@@ -68,8 +79,11 @@ class SolverService:
             steps.append(SolutionStep(
                 step_number=1,
                 description=f"Given equation: {equation_text}",
-                latex=equation_text,
-                explanation="Starting with the given equation"
+                explanation="Starting with the given equation from the problem statement",
+                confidence=0.95,
+                reasoning="This is a direct transcription of the problem statement",
+                working_out=equation_text,
+                latex=equation_text
             ))
             
             # Parse equation
@@ -85,8 +99,11 @@ class SolverService:
             steps.append(SolutionStep(
                 step_number=2,
                 description="Solving for the variable",
-                latex=f"{variables[0]} = {latex(solutions)}",
-                explanation=f"Using algebraic methods to solve for {variables[0]}"
+                explanation=f"Using algebraic methods to isolate {variables[0]}. We rearrange the equation to get {variables[0]} by itself on one side.",
+                confidence=0.92,
+                reasoning="Algebraic manipulation is a standard and reliable method for solving linear equations",
+                working_out=f"Rearranging: {expr} = 0\nSolving for {variables[0]}: {variables[0]} = {solutions}",
+                latex=f"{variables[0]} = {latex(solutions)}"
             ))
             
             return Solution(
@@ -111,8 +128,11 @@ class SolverService:
             steps.append(SolutionStep(
                 step_number=1,
                 description=f"Given integral: ∫{expr_text}dx",
-                latex=f"\\int {expr_text} \\, dx",
-                explanation="Finding the antiderivative"
+                explanation="We need to find the antiderivative (indefinite integral) of this function",
+                confidence=0.98,
+                reasoning="Integration is the reverse process of differentiation, used to find area under curves",
+                working_out=f"Original function: {expr_text}",
+                latex=f"\\int {expr_text} \\, dx"
             ))
             
             # Parse and integrate
@@ -123,8 +143,11 @@ class SolverService:
             steps.append(SolutionStep(
                 step_number=2,
                 description="Applying integration rules",
-                latex=f"\\int {latex(expr)} \\, dx = {latex(result)} + C",
-                explanation="Using fundamental integration techniques"
+                explanation="Using fundamental integration techniques such as power rule, exponential rule, or trigonometric integrals",
+                confidence=0.94,
+                reasoning="SymPy uses proven mathematical algorithms for symbolic integration",
+                working_out=f"∫{expr_text}dx = {result} + C",
+                latex=f"\\int {latex(expr)} \\, dx = {latex(result)} + C"
             ))
             
             return Solution(
@@ -149,8 +172,11 @@ class SolverService:
             steps.append(SolutionStep(
                 step_number=1,
                 description=f"Given function: f(x) = {expr_text}",
-                latex=f"f(x) = {expr_text}",
-                explanation="Finding the derivative of the function"
+                explanation="We need to find the derivative (rate of change) of this function with respect to x",
+                confidence=0.98,
+                reasoning="Differentiation measures how a function changes as its input changes",
+                working_out=f"f(x) = {expr_text}",
+                latex=f"f(x) = {expr_text}"
             ))
             
             # Parse and differentiate
@@ -161,8 +187,11 @@ class SolverService:
             steps.append(SolutionStep(
                 step_number=2,
                 description="Applying differentiation rules",
-                latex=f"f'(x) = {latex(result)}",
-                explanation="Using calculus differentiation rules"
+                explanation="Using calculus differentiation rules such as power rule, product rule, chain rule, etc.",
+                confidence=0.96,
+                reasoning="SymPy implements standard calculus rules that have been proven mathematically",
+                working_out=f"d/dx[{expr_text}] = {result}",
+                latex=f"f'(x) = {latex(result)}"
             ))
             
             return Solution(

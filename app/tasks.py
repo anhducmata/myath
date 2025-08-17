@@ -131,27 +131,6 @@ def process_math_problem(self, problem_id: str, file_url: str, user_id: str):
             'status': 'failed',
             'error': str(e)
         }
-        
-    except Exception as e:
-        logger.error(f"Error processing problem {problem_id}: {e}")
-        
-        # Update status to failed
-        try:
-            import asyncio
-            asyncio.run(firebase_service.update_problem(problem_id, {
-                'status': ProblemStatus.FAILED,
-                'error_message': str(e),
-                'updated_at': datetime.utcnow()
-            }))
-        except Exception as update_error:
-            logger.error(f"Failed to update error status: {update_error}")
-        
-        # Don't retry - just fail the task
-        return {
-            'problem_id': problem_id,
-            'status': 'failed',
-            'error': str(e)
-        }
 
 
 def _download_file(url: str) -> bytes:
