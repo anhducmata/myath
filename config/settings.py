@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     
     # OpenAI
     openai_api_key: str
-    openai_model: str = "gpt-4"
+    openai_model: str = "gpt-5"
     
     # File Upload
     max_file_size_mb: int = 10

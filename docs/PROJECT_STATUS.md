@@ -88,7 +88,7 @@ flutter/
 - **Storage**: Google Cloud Storage (mock mode)
 - **Queue**: Redis + Celery for background processing
 - **OCR**: Tesseract + Mathpix API integration
-- **AI**: OpenAI GPT-4 for problem parsing
+- **AI**: OpenAI o4-mini for problem parsing
 - **Math**: SymPy for symbolic mathematics
 
 ### 🚦 **Next Steps for Production**

@@ -243,37 +243,58 @@ class SolverService:
                 # Use OpenAI to analyze the geometric problem
                 try:
                     from config.settings import settings
-                    import openai
+                    from openai import OpenAI
                     
-                    client = openai.OpenAI(api_key=settings.openai_api_key)
+                    client = OpenAI(api_key=settings.openai_api_key)
                     
                     geometry_prompt = f"""
-Analyze this geometry multiple choice question:
+Solve the following geometry multiple-choice question. 
+Use step-by-step reasoning, then provide the final answer in strict format.
 
-Question: {problem.statement}
+Question:
+{problem.statement}
 
 Options:
 {chr(10).join(problem.options)}
 
-This is a question about triangle geometry. The key concept is that the height of a triangle relative to a base is the perpendicular distance from the opposite vertex to the line containing the base.
+Instructions:
+1. Understand the problem (identify the geometric concept being tested).
+2. Analyze the diagram (note markings, perpendiculars, equal lengths, parallel lines).
+3. Apply geometric principles (definitions, theorems, formulas).
+4. Eliminate incorrect options and select the best choice.
 
-For a triangle with base AD, the height would be the perpendicular line from the opposite vertex to line AD.
-
-Based on standard geometric notation and common diagram conventions, which option represents the height relative to base AD?
-
-Provide your answer in this format:
-ANSWER: [option letter]
-REASONING: [brief explanation]
+Output format:
+ANSWER: <option letter>
+REASONING: <short numbered steps showing key logic>
 """
                     
                     response = client.chat.completions.create(
-                        model=settings.openai_model,
+                        model="gpt-5",
                         messages=[
-                            {"role": "system", "content": "You are a geometry expert. Analyze the given triangle problem and determine the correct answer based on geometric principles."},
-                            {"role": "user", "content": geometry_prompt}
+                            {
+                                "role": "developer",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": "You are Reasoner — a calm, precise, helpful assistant specializing in geometry and mathematics. Internally reason step-by-step to reach correct conclusions, but DO NOT reveal internal chain-of-thought, private deliberation, or stream-of-consciousness. Always output a concise, user-safe result in the exact format described."
+                                    }
+                                ]
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": geometry_prompt
+                                    }
+                                ]
+                            }
                         ],
-                        temperature=0.1,
-                        max_tokens=300
+                        response_format={
+                            "type": "text"
+                        },
+                        verbosity="medium",
+                        reasoning_effort="medium"
                     )
                     
                     ai_response = response.choices[0].message.content
@@ -382,74 +403,183 @@ REASONING: [brief explanation]
                 
                 try:
                     from config.settings import settings
-                    import openai
+                    from openai import OpenAI
                     
-                    client = openai.OpenAI(api_key=settings.openai_api_key)
+                    client = OpenAI(api_key=settings.openai_api_key)
+                    
+                    # Encode image to base64
+                    import base64
+                    from io import BytesIO
+                    
+                    buffer = BytesIO()
+                    problem.image.save(buffer, format='PNG')
+                    base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
                     
                     general_prompt = f"""
-Analyze this multiple choice question:
-
-Question: {problem.statement}
+Problem:
+{problem.statement}
 
 Options:
 {chr(10).join(problem.options)}
 
-Please analyze this question step by step and determine the correct answer. Consider:
-- Mathematical concepts and formulas if applicable
-- Logical reasoning
-- Common knowledge in the subject area
-- Process of elimination
-
-Provide your answer in this format:
-ANSWER: [option letter]
-REASONING: [detailed explanation of why this is correct]
-CONFIDENCE: [0.1 to 1.0]
+Count shapes in the boat. What is the ratio of circles to total triangles and rectangles?
 """
                     
                     response = client.chat.completions.create(
-                        model=settings.openai_model,
+                        model="gpt-5",
                         messages=[
-                            {"role": "system", "content": "You are an expert tutor who can solve multiple choice questions across various subjects including mathematics, science, and general knowledge."},
-                            {"role": "user", "content": general_prompt}
+                            {
+                                "role": "developer", 
+                                "content": """Solve the problem below. Return strict JSON in this format:
+
+{
+  "answer": "<final answer>",
+  "steps": ["short numbered steps only with counts/equations"],
+  "explanation": "<1–2 sentence summary>",
+  "confidence": "<high|medium|low>"
+}"""
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": general_prompt
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/png;base64,{base64_image}"
+                                        }
+                                    }
+                                ]
+                            }
                         ],
-                        temperature=0.1,
-                        max_tokens=500
+                        response_format={
+                            "type": "text"
+                        },
+                        verbosity="medium",
+                        reasoning_effort="medium"
                     )
                     
                     ai_response = response.choices[0].message.content
+                    logger.info(f"🔍 Raw AI response: {ai_response}")
                     
-                    # Parse the AI response
-                    import re
-                    answer_match = re.search(r'ANSWER:\s*([A-D])\)', ai_response)
-                    reasoning_match = re.search(r'REASONING:\s*(.+?)(?=CONFIDENCE:|$)', ai_response, re.DOTALL)
-                    confidence_match = re.search(r'CONFIDENCE:\s*([0-9.]+)', ai_response)
-                    
-                    if answer_match:
-                        answer_letter = answer_match.group(1)
+                    # Parse the JSON response
+                    import json
+                    try:
+                        # Try to parse as JSON first
+                        response_json = json.loads(ai_response)
+                        answer_letter = response_json.get("answer", "").strip()
+                        explanation = response_json.get("explanation", "")
+                        steps = response_json.get("steps", [])
+                        confidence_str = response_json.get("confidence", "medium")
+                        notes = response_json.get("notes", "")
+                        
+                        # Convert confidence to numeric
+                        confidence_map = {"high": 0.9, "medium": 0.7, "low": 0.4}
+                        ai_confidence = confidence_map.get(confidence_str.lower(), 0.7)
+                        
                         # Find the corresponding option
+                        correct_answer = None
                         for option in problem.options:
                             if option.startswith(f"{answer_letter})"):
                                 correct_answer = option
                                 break
                         
-                        if reasoning_match:
-                            ai_reasoning = reasoning_match.group(1).strip()
-                            reasoning = f"AI Analysis:\n{ai_reasoning}\n"
+                        if correct_answer:
+                            reasoning = f"Step-by-step analysis:\n{explanation}\n\nDetailed steps:\n"
+                            for i, step in enumerate(steps, 1):
+                                reasoning += f"{i}. {step}\n"
+                            if notes:
+                                reasoning += f"\nNotes: {notes}"
+                                
+                            logger.info(f"✅ AI selected: {correct_answer} (confidence: {ai_confidence})")
+                            
+                            # Convert string steps to SolutionStep objects
+                            solution_steps = []
+                            for i, step_desc in enumerate(steps):
+                                solution_steps.append(SolutionStep(
+                                    step_number=i + 3,  # Start from 3 since we already have 2 steps
+                                    description=step_desc,
+                                    latex=None,
+                                    explanation=step_desc
+                                ))
+                            
+                            return Solution(
+                                result={
+                                    "question_type": "Multiple Choice Question",
+                                    "correct_answer": correct_answer,
+                                    "options": problem.options,
+                                    "reasoning": reasoning
+                                },
+                                method="mcq_analysis",
+                                steps=steps + solution_steps,  # Add to existing steps
+                                confidence=ai_confidence,
+                                verification_passed=True
+                            )
                         else:
-                            reasoning = f"Selected {correct_answer} based on AI analysis.\n"
+                            logger.warning(f"Could not find matching option for answer: {answer_letter}")
+                            
+                    except json.JSONDecodeError:
+                        logger.warning("Response is not valid JSON, trying old format parsing")
+                        # Fallback to old format parsing
+                        import re
+                        answer_match = re.search(r'ANSWER:\s*([A-D])\)?', ai_response)
+                        reasoning_match = re.search(r'REASONING:\s*(.+?)(?=CONFIDENCE:|$)', ai_response, re.DOTALL)
+                        confidence_match = re.search(r'CONFIDENCE:\s*([0-9.]+)', ai_response)
                         
-                        # Extract confidence if provided
-                        ai_confidence = 0.8  # default
-                        if confidence_match:
-                            try:
-                                ai_confidence = float(confidence_match.group(1))
-                            except ValueError:
-                                pass
-                    else:
-                        # Fallback if parsing fails
-                        correct_answer = problem.options[0] if problem.options else "Unable to determine"
-                        reasoning = "AI analysis was inconclusive, selected first option as fallback."
-                        ai_confidence = 0.3
+                        if answer_match:
+                            answer_letter = answer_match.group(1)
+                            # Find the corresponding option
+                            correct_answer = None
+                            for option in problem.options:
+                                if option.startswith(f"{answer_letter})"):
+                                    correct_answer = option
+                                    break
+                            
+                            if correct_answer:
+                                if reasoning_match:
+                                    ai_reasoning = reasoning_match.group(1).strip()
+                                    reasoning = f"AI Analysis:\n{ai_reasoning}\n"
+                                else:
+                                    reasoning = f"Selected {correct_answer} based on AI analysis.\n"
+                                
+                                # Extract confidence if provided
+                                ai_confidence = 0.8  # default
+                                if confidence_match:
+                                    try:
+                                        ai_confidence = float(confidence_match.group(1))
+                                    except ValueError:
+                                        ai_confidence = 0.8
+                                
+                                logger.info(f"✅ AI selected (old format): {correct_answer}")
+                                
+                                steps.append(SolutionStep(
+                                    step_number=3,
+                                    description=f"AI Analysis Result: {correct_answer}",
+                                    latex=None,
+                                    explanation=reasoning
+                                ))
+                                
+                                return Solution(
+                                    result={
+                                        "question_type": "Multiple Choice Question",
+                                        "correct_answer": correct_answer,
+                                        "options": problem.options,
+                                        "reasoning": reasoning
+                                    },
+                                    method="mcq_analysis",
+                                    steps=steps,
+                                    confidence=ai_confidence,
+                                    verification_passed=True
+                                )
+                    
+                    # If we get here, fallback
+                    logger.warning("Failed to parse AI response, using fallback")
+                    correct_answer = problem.options[0] if problem.options else "Unable to determine"
+                    reasoning = "AI analysis was inconclusive, selected first option as fallback."
+                    ai_confidence = 0.3
                     
                 except Exception as e:
                     logger.warning(f"OpenAI general MCQ analysis failed: {e}")

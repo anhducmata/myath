@@ -1,4 +1,4 @@
-import openai
+from openai import OpenAI
 import json
 import logging
 import base64
@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 class ParserService:
     def __init__(self):
-        self.client = openai.OpenAI(api_key=settings.openai_api_key)
-        self.model = settings.openai_model
+        self.client = OpenAI(api_key=settings.openai_api_key)
+        self.model = "gpt-5"  # Use gpt-5 for reasoning
         self.confidence_threshold = 0.7  # Threshold for using image fallback
     
     async def parse_problem(self, ocr_text: str, latex: Optional[str] = None, image_content: Optional[bytes] = None, image_url: Optional[str] = None) -> ParsedProblem:
@@ -86,11 +86,16 @@ class ParserService:
             
             # Make the combined vision + text request
             response = self.client.chat.completions.create(
-                model="gpt-4o",  # Use the latest vision model
+                model="gpt-5",
                 messages=[
                     {
-                        "role": "system",
-                        "content": "You are a mathematics problem parser with vision capabilities. Analyze both the extracted OCR text and the original image to parse the problem into a structured JSON format. Use the OCR text as a starting point, but correct and enhance it based on what you see in the image."
+                        "role": "developer",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "You are Reasoner — a calm, precise, helpful assistant specializing in mathematics problem parsing with vision capabilities. You analyze both extracted OCR text and original images to parse problems into structured JSON format. Internally reason step-by-step to reach correct conclusions, but DO NOT reveal internal chain-of-thought, private deliberation, or stream-of-consciousness. Always output a concise, user-safe result in the exact format described."
+                            }
+                        ]
                     },
                     {
                         "role": "user",
@@ -103,11 +108,14 @@ class ParserService:
                         ]
                     }
                 ],
-                temperature=0.1,
-                max_tokens=1500
+                response_format={
+                    "type": "text"
+                },
+                verbosity="medium",
+                reasoning_effort="medium"
             )
             
-            # Parse the response
+            # Parse the response from standard chat completions API
             content = response.choices[0].message.content
             logger.info(f"📋 OpenAI combined response received: {len(content)} characters")
             
@@ -129,22 +137,35 @@ class ParserService:
             prompt = self._create_parsing_prompt(ocr_text, latex)
             
             response = self.client.chat.completions.create(
-                model=self.model,
+                model="gpt-5",
                 messages=[
                     {
-                        "role": "system", 
-                        "content": "You are a mathematics problem parser. Parse the given text into a structured JSON format."
+                        "role": "developer",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "You are Reasoner — a calm, precise, helpful assistant specializing in mathematics problem parsing. You parse given text into structured JSON format. Internally reason step-by-step to reach correct conclusions, but DO NOT reveal internal chain-of-thought, private deliberation, or stream-of-consciousness. Always output a concise, user-safe result in the exact format described."
+                            }
+                        ]
                     },
                     {
                         "role": "user",
-                        "content": prompt
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            }
+                        ]
                     }
                 ],
-                temperature=0.1,
-                max_tokens=1000
+                response_format={
+                    "type": "text"
+                },
+                verbosity="medium",
+                reasoning_effort="medium"
             )
             
-            # Parse the response
+            # Parse the response from standard chat completions API
             content = response.choices[0].message.content
             parsed_data = json.loads(content)
             
@@ -189,11 +210,16 @@ class ParserService:
             
             # Make the vision request with either URL or base64 content
             response = self.client.chat.completions.create(
-                model="gpt-4o",  # Use the latest vision model
+                model="gpt-5",
                 messages=[
                     {
-                        "role": "system",
-                        "content": "You are a mathematics problem parser with vision capabilities. Analyze both the extracted text and the original image to parse the problem into a structured JSON format. Focus on providing accurate mathematical analysis."
+                        "role": "developer",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "You are Reasoner — a calm, precise, helpful assistant specializing in mathematics problem parsing with vision capabilities. You analyze both extracted text and original images to parse problems into structured JSON format. Internally reason step-by-step to reach correct conclusions, but DO NOT reveal internal chain-of-thought, private deliberation, or stream-of-consciousness. Always output a concise, user-safe result in the exact format described."
+                            }
+                        ]
                     },
                     {
                         "role": "user",
@@ -206,13 +232,16 @@ class ParserService:
                         ]
                     }
                 ],
-                temperature=0.1,
-                max_tokens=1500
+                response_format={
+                    "type": "text"
+                },
+                verbosity="medium",
+                reasoning_effort="medium"
             )
             
             logger.info("✅ OpenAI vision parsing successful!")
             
-            # Parse the response
+            # Parse the response from standard chat completions API
             content = response.choices[0].message.content
             logger.info(f"🔍 OpenAI vision raw response: {content[:200]}...")
             
@@ -286,6 +315,15 @@ Guidelines:
 - For MCQ problems, ensure ALL options are captured and formatted correctly as A), B), C), D)
 - Be specific about what the problem is asking for based on both text and visual cues
 - Include mathematical expressions in LaTeX format when possible
+
+SPECIAL INSTRUCTIONS FOR COUNTING/COMPARISON PROBLEMS:
+If the problem involves counting objects, calculating ratios, finding totals, or comparing quantities:
+- Identify ALL distinct objects/shapes in the image (circles, triangles, rectangles, etc.)
+- Count each type of object systematically, going through the image methodically
+- For visual counting problems, describe where each object is located in the image
+- Break down complex calculations into step-by-step human reasoning
+- For ratio problems, clearly identify what needs to be compared to what
+- Example approach: "Count circles: [list each one], Count triangles: [list each one], Total shapes = circles + triangles + rectangles, Ratio = circles : (triangles + rectangles)"
 
 CRITICAL: Return ONLY the JSON object, no explanation, no markdown formatting, no additional text.
 """
